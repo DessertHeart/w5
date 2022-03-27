@@ -2,16 +2,15 @@
 
 pragma solidity =0.6.6;
 
-import './uniswap-v2-core-master/contracts/interfaces/IUniswapV2Pair';
+import './uniswap-v2-core-master/contracts/interfaces/IUniswapV2Pair.sol';
 import './uniswap-v2-core-master/contracts/interfaces/IUniswapV2Callee.sol';
 import './uniswap-v2-periphery-master/contracts/interfaces/IUniswapV2Router01.sol';
 
-import './uniswap-v2-periphery-master/contracts/interfaces/V3/IUniswapV3Factory.sol';
-import './uniswap-v2-periphery-master/contracts/interfaces/V3/ISwapRouter.sol';
+import './uniswap-v3-core/interfaces/IUniswapV3Factory.sol';
+import './uniswap-v3-periphery/interfaces/ISwapRouter.sol';
 
 import './uniswap-v2-periphery-master/contracts/interfaces/IERC20.sol';
 import './uniswap-v2-periphery-master/contracts/libraries/UniswapV2Library.sol';
-
 import './uniswap-v2-periphery-master/contracts/libraries/TransferHelper.sol';
 
 
@@ -23,22 +22,31 @@ contract UniswapV2Flashswap is IUniswapV2Callee {
 
     address immutable factoryV3;
     address immutable factoryV2;
-    address immutable routerV2;
+    address immutable piarV2;
     address immutable airToken;
     address immutable flyToken;
+    address immutable swapRouterV3;
 
-    constructor(address _factoryV2, address _factoryV3, address _router, address _airToken, address _flyToken) public {
+    // V3参数
+    uint24 constant private POOL_FEE = 3000;
+
+    constructor(address _factoryV2, address _factoryV3, address _piarV2, address _airToken, address _flyToken, address _swapRouterV3) public {
         factoryV3 = _factoryV3;
         factoryV2 = _factoryV2;
         airToken = _airToken;
-        routerV2 = _router;
+        piarV2 = _piarV2;
         flyToken = _flyToken;
+        swapRouterV3 = _swapRouterV3;
     }
 
     receive() external payable {}
 
     // 调用swap执行闪电贷
     function flashSwapCall(uint amountAirToken) public {
+        address Pair = UniswapV2Library.pairFor(factoryV2, airToken, flyToken);
+        airToken.safeApprove(address(piarV2), type(uint).max);
+        flyToken.safeApprove(address(piarV2), type(uint).max);
+
         try IUniswapV2Pair(Pair).swap(amountAirToken, 0, address(this), 0x01) {
             emit SuccessEvent("FlashSwap Success!");
         } catch Error(string memory reason) {
@@ -48,7 +56,7 @@ contract UniswapV2Flashswap is IUniswapV2Callee {
         }
     }
 
-    // 闪电贷回调函数：V2借到TokenA， TokenA注入V3，得到TokenB，还TokenB给V2
+    // 闪电贷回调函数：V2借到AirToken， AirToken注入V3，得到FlyToken，还FlyToken给V2
     function uniswapV2Call(address sender, uint amount0, uint amount1, bytes calldata data) external override {
         address[] memory path = new address[](2);
         uint amountAirToken;
@@ -57,33 +65,37 @@ contract UniswapV2Flashswap is IUniswapV2Callee {
         // scope for token{0,1}, avoids stack too deep errors
         { 
         // 获取当前池中交易对token地址
-        address token0 = IUniswapV2Pair(msg.sender).token0();
-        address token1 = IUniswapV2Pair(msg.sender).token1();
+        address token0 = airToken;
+        address token1 = flyToken;
         // 检查是不是V2-pair
         assert(msg.sender == UniswapV2Library.pairFor(factoryV2, token0, token1)); 
-
-        // 只能用一个买另一个，!=0的为要买的，即path[1]
+        // 买token1
         assert(amount0 == 0 || amount1 == 0); 
-        path[0] = amount0 == 0 ? token0 : token1;
-        path[1] = amount0 == 0 ? token1 : token0;
-
-        // 记录期望AirToken的数量
-        amountAirToken = token0 == flyToken ? amount1 : amount0;
-        // 记录期望FlyToken的数量
-        amountFlyToken = token0 == flyToken ? amount0 : amount1;
+        path[0] = token0;
+        path[1] = token1;
+        // 记录买到的AirToken的数量
+        amountAirToken = amount1 == 0 ? amount0 : amount0;
         }
-
-        // 把要获得的token地址给token
-        IERC20 token = IERC20(path[0] == flyToken ? path[1] : path[0]);
 
         if (amountAirToken > 0) {
             // 授权RouterV3
-            token.approve(address(swapRouterV3), amountAirToken);
-
+            airToken.safeApprove(address(swapRouterV3), 100_000);
+            flyToken.safeApprove(address(swapRouterV3), 100_000);
             // todo: V3借贷
-            uint amountReceived = ISwapRouter(swapRouterV3).uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata _data);
-            // 需还款的path[0]金额
-            uint amountRequired = UniswapV2Library.getAmountsIn(factory, amountAirToken, path)[0];
+            uint amountReceived = ISwapRouter(swapRouterV3).exactInputSingle(
+                ISwapRouter.ExactInputSingleParams({
+                    tokenIn: path[0],
+                    tokenOut: path[1],
+                    fee: POOL_FEE,
+                    recipient: address(this),
+                    //deadline:
+                    amountIn: amountAirToken.add(1000),
+                    amountOutMinimum: 0,
+                    sqrtPriceLimitX96: 0
+                })
+            );
+            // 需还款的flyToken金额
+            uint amountRequired = UniswapV2Library.getAmountsIn(factoryV2, amountAirToken, path)[0];
 
             // 如果倒手得到的币不足以还款，回滚
             assert(amountReceived > amountRequired); 
@@ -93,12 +105,7 @@ contract UniswapV2Flashswap is IUniswapV2Callee {
 
             // 套利（如果有）
             assert(IERC20(flyToken).safeTransfer(msg.sender, amountReceived - amountRequired)); 
-
-        } else {
-            // todo: 要购买的是FlyToken
-        }
-    }
+        } 
     }
 
-   
 }
