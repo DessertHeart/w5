@@ -1,41 +1,35 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.13;
+pragma solidity 0.8.10;
 
 
 // AAVE
-import './aave-v3-core/contracts/flashloan/base/FlashLoanReceiverBase.sol';
-import './aave-v3-core/contracts/flashloan/base/FlashLoanSimpleReceiverBase.sol';
-import './aave-v3-core/contracts/interfaces/IPool.sol';
+import {FlashLoanReceiverBase} from './aave-v3-core/contracts/flashloan/base/FlashLoanReceiverBase.sol';
+import {IPoolAddressesProvider} from './aave-v3-core/contracts/interfaces/IPoolAddressesProvider.sol';
+import {IPool} from './aave-v3-core/contracts/interfaces/IPool.sol';
 // Others
+import {IERC20} from './aave-v3-core/contracts/dependencies/openzeppelin/contracts/IERC20.sol';
+import {GPv2SafeERC20} from './aave-v3-core/contracts/dependencies/gnosis/contracts/GPv2SafeERC20.sol';
 
-
-contract AaveFlashswap is FlashLoanReceiverBase, FlashLoanSimpleReceiverBase {
+contract AaveFlashswap is FlashLoanReceiverBase {
+    using GPv2SafeERC20 for IERC20;
 
     event SuccessEvent(string indexed message);
     event CatchStringError(string indexed message);
     event CatchDataError(bytes indexed data);
 
-    address immutable pool;
-
-    constructor(address _pool) public {
-        pool = _pool;
-    }
-
-    receive() external payable {}
+    constructor(IPoolAddressesProvider _provider, address _airToken) FlashLoanReceiverBase(_provider) public {}
 
     // 调用swap执行闪电贷
-    function flashSwapCall(uint amountAirToken) public {
+    function flashSwapCall(address _asset, uint _amount) public {
         
-        try IPool(pool).FlashLoan({
-            target: ,
-            initiator: ,
-            asset: ,
-            amount: ,
-            //DataTypes.InterestRateMode
-            interestRateMode: ,
-            premium: ,
-            referralCode:
+        // POOL 来自FlashLoanReceiverBase.
+        try IPool(POOL).flashLoanSimple({
+            receiverAddress: address(this),
+            asset: _asset,
+            amount: _amount,
+            params: 0,
+            referralCode: 0
         }) {
             emit SuccessEvent("FlashSwap Success!");
         } catch Error(string memory reason) {
@@ -46,9 +40,23 @@ contract AaveFlashswap is FlashLoanReceiverBase, FlashLoanSimpleReceiverBase {
     }
 
     // todo:闪电贷回调函数
-    // _reserves, _reservesList, _eModeCategories, _usersConfig[onBehalfOf], flashParams
-    function executeOperation() external override {
- 
+    function executeOperation(
+        address _asset,
+        uint256 _amount,
+        uint256 _fees,
+        address _sender,
+        bytes memory _params
+    ) public override returns(bool){
+        // 额度检查
+        require(_amount <= IERC20(_asset).balanceOf(address(this)), 'Invalid balance for the contract');
+        IERC20(_asset).approve(address(POOL), _amount + _fee);
+
+        // todo: logic goes here.
+
+        uint totalDebt = _amount + _fee;
+        IERC20(_asset).transfer(_asset, totalDebt);
+
+        return true;
     }
 
 }
