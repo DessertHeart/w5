@@ -15,6 +15,7 @@ import './uniswap-v2-periphery-master/contracts/libraries/TransferHelper.sol';
 
 
 contract UniswapV2Flashswap is IUniswapV2Callee {
+    using TransferHelper for address;
 
     event SuccessEvent(string indexed message);
     event CatchStringError(string indexed message);
@@ -44,9 +45,10 @@ contract UniswapV2Flashswap is IUniswapV2Callee {
     // 调用swap执行闪电贷
     function flashSwapCall(uint amountAirToken) public {
         address Pair = UniswapV2Library.pairFor(factoryV2, airToken, flyToken);
-        airToken.safeApprove(address(piarV2), type(uint).max);
-        flyToken.safeApprove(address(piarV2), type(uint).max);
+        airToken.safeApprove(address(piarV2), 100_000);
+        flyToken.safeApprove(address(piarV2), 100_000);
 
+        // todo: 此处第四个入参bytes应该填什么？为何报：TypeError: Invalid type for argument in function call. Invalid implicit conversion from int_const 1 to bytes memory requested
         try IUniswapV2Pair(Pair).swap(amountAirToken, 0, address(this), 0x01) {
             emit SuccessEvent("FlashSwap Success!");
         } catch Error(string memory reason) {
@@ -88,8 +90,8 @@ contract UniswapV2Flashswap is IUniswapV2Callee {
                     tokenOut: path[1],
                     fee: POOL_FEE,
                     recipient: address(this),
-                    //deadline:
-                    amountIn: amountAirToken.add(1000),
+                    deadline: block.timestamp,
+                    amountIn: amountAirToken + 1000,
                     amountOutMinimum: 0,
                     sqrtPriceLimitX96: 0
                 })
@@ -101,10 +103,10 @@ contract UniswapV2Flashswap is IUniswapV2Callee {
             assert(amountReceived > amountRequired); 
 
             // 归还借出的部分
-            assert(IERC20(flyToken).safeTransfer(msg.sender, amountRequired)); 
+            flyToken.safeTransfer(msg.sender, amountRequired); 
 
             // 套利（如果有）
-            assert(IERC20(flyToken).safeTransfer(msg.sender, amountReceived - amountRequired)); 
+            flyToken.safeTransfer(msg.sender, amountReceived - amountRequired); 
         } 
     }
 
