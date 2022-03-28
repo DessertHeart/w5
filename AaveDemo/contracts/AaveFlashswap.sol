@@ -18,7 +18,7 @@ contract AaveFlashswap is FlashLoanReceiverBase {
     event CatchStringError(string indexed message);
     event CatchDataError(bytes indexed data);
 
-    constructor(IPoolAddressesProvider _provider, address _airToken) FlashLoanReceiverBase(_provider) public {}
+    constructor(IPoolAddressesProvider _provider) FlashLoanReceiverBase(_provider) public {}
 
     // 调用swap执行闪电贷
     function flashSwapCall(address _asset, uint _amount) public {
