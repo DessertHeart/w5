@@ -2,34 +2,51 @@
 
 pragma solidity 0.8.10;
 
-
+// UniswapV3
+import './uniswap-v3-periphery/interfaces/ISwapRouter.sol';
+// UniswapV2
+import './uniswap-v2-periphery-master/contracts/interfaces/IUniswapV2Router02.sol';
 // AAVE
-import {FlashLoanReceiverBase} from './aave-v3-core/contracts/flashloan/base/FlashLoanReceiverBase.sol';
+import {FlashLoanSimpleReceiverBase} from './aave-v3-core/contracts/flashloan/base/FlashLoanSimpleReceiverBase.sol';
 import {IPoolAddressesProvider} from './aave-v3-core/contracts/interfaces/IPoolAddressesProvider.sol';
-import {IPool} from './aave-v3-core/contracts/interfaces/IPool.sol';
 // Others
 import {IERC20} from './aave-v3-core/contracts/dependencies/openzeppelin/contracts/IERC20.sol';
-import {GPv2SafeERC20} from './aave-v3-core/contracts/dependencies/gnosis/contracts/GPv2SafeERC20.sol';
+import './uniswap-v3-core/libraries/TransferHelper.sol';
 
-contract AaveFlashswap is FlashLoanReceiverBase {
-    using GPv2SafeERC20 for IERC20;
+
+contract AaveFlashswap is FlashLoanSimpleReceiverBase {
+
+    //rinkeby address
+
+    address private constant WETH = 0xc778417E063141139Fce010982780140Aa0cD5Ab;
+    address private constant ATOKEN =0x784c47Ba17A32e9C636cf917c9034c0aD1E87d41;
+    address private constant UNISWAP_V2_ROUTER =0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
+    address private constant SWAPROUTER =0xE592427A0AEce92De3Edee1F18E0157C05861564;
+    //V3池费
+    uint24 private constant  poolFee = 3000;
+    
+    // AAVE.pool合约地址
+    address private constant DEVADDRESS =0x6aCB38f47C14594F58614B89Aac493e1Ab3B4C34;
 
     event SuccessEvent(string indexed message);
     event CatchStringError(string indexed message);
     event CatchDataError(bytes indexed data);
 
-    constructor(IPoolAddressesProvider _provider) FlashLoanReceiverBase(_provider) public {}
+    // IPoolAddressesProvider?
+    constructor(IPoolAddressesProvider _provider) FlashLoanSimpleReceiverBase(_provider) public {}
 
     // 调用swap执行闪电贷
     function flashSwapCall(address _asset, uint _amount) public {
-        
+        bytes memory params = "";
+        uint16 referralCode = 0;
+
         // POOL 来自FlashLoanReceiverBase.
-        try IPool(POOL).flashLoanSimple({
+        try POOL.flashLoanSimple({
             receiverAddress: address(this),
             asset: _asset,
             amount: _amount,
-            params: 0,
-            referralCode: 0
+            params: params,
+            referralCode: referralCode
         }) {
             emit SuccessEvent("FlashSwap Success!");
         } catch Error(string memory reason) {
@@ -47,14 +64,42 @@ contract AaveFlashswap is FlashLoanReceiverBase {
         address _sender,
         bytes memory _params
     ) public override returns(bool){
-        // 额度检查
-        require(_amount <= IERC20(_asset).balanceOf(address(this)), 'Invalid balance for the contract');
-        IERC20(_asset).approve(address(POOL), _amount + _fee);
 
-        // todo: logic goes here.
+        address[] memory path = new address[](2);
+        path[0] = WETH;
+        path[1] = ATOKEN;
+        //AAVE借来的WETH，V2买ATOKEN
+        IUniswapV2Router02(UNISWAP_V2_ROUTER).swapExactETHForTokens(
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+        // V2买到的ATOKEN
+        uint256 amountToken = IERC20(ATOKEN).balanceOf(address(this));
 
-        uint totalDebt = _amount + _fee;
-        IERC20(_asset).transfer(_asset, totalDebt);
+        //V3通过ATOKEN买WETH
+        IERC20(ATOKEN).approve(address(SWAPROUTER), amountToken);
+        ISwapRouter.ExactInputSingleParams memory params = ISwapRouter
+            .ExactInputSingleParams({
+                tokenIn: ATOKEN,
+                tokenOut: WETH,
+                fee: poolFee,
+                recipient: address(this),
+                deadline: block.timestamp,
+                amountIn: amountToken,
+                amountOutMinimum: 0,
+                sqrtPriceLimitX96: 0
+            });
+        // V3获得的WETH
+        uint256 amountOut = ISwapRouter(SWAPROUTER).exactInputSingle(params);
+
+        // 还款AAVE
+        uint256 amountRequired = _amount + _fees;
+        IERC20(_asset).approve(address(POOL), amountRequired);
+        TransferHelper.safeTransfer(_asset, address(POOL), amountRequired);
+
+        // todo:套利amountOut - amountRequired
 
         return true;
     }
