@@ -26,7 +26,7 @@ contract AaveFlashswap is FlashLoanSimpleReceiverBase {
     uint24 private constant  poolFee = 3000;
     
     // AAVE.pool合约地址
-    address private constant DEVADDRESS =0x6aCB38f47C14594F58614B89Aac493e1Ab3B4C34;
+    address private constant PERSONAL =0xAe16D9E58c63cf274E30B06Cb7c9C5367c3229C9;
 
     event SuccessEvent(string indexed message);
     event CatchStringError(string indexed message);
@@ -96,10 +96,11 @@ contract AaveFlashswap is FlashLoanSimpleReceiverBase {
 
         // 还款AAVE
         uint256 amountRequired = _amount + _fees;
-        IERC20(_asset).approve(address(POOL), amountRequired);
-        TransferHelper.safeTransfer(_asset, address(POOL), amountRequired);
 
-        // todo:套利amountOut - amountRequired
+        // 偿还只要授权即可，AAVE会自己尝试转账
+        IERC20(_asset).approve(msg.sender, amountRequired);
+        // 套利
+        TransferHelper.safeTransfer(address(this), PERSONAL, amountOut - amountRequired);
 
         return true;
     }
